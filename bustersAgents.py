@@ -124,12 +124,27 @@ from game import Actions
 from game import Directions
 import random, sys
 
+import graphicsDisplay
+import numpy as np
+import cv2
+from cnn import PolicyGradientCNN
+
 '''Policy Gradients PacMan Agent'''
 class PolicyGradientPAgent(BustersAgent):
 
     def registerInitialState(self, gameState):
         BustersAgent.registerInitialState(self, gameState)
         self.distancer = Distancer(gameState.data.layout, False)
+        self.first_time = True
+        self.frames = np.ones((2,256,256,1))
+        self.last_actions = np.ones((2,4))
+        self.last_rewards = np.ones((2,1))
+        self.action_space = 4
+        self.epsilon = 0.9
+        self.epsilon_min = 0.05
+        self.epsilon_decay = 0.99
+        self.dpg = PolicyGradientCNN(self.frames.shape[1:], self.action_space, self.epsilon, self.epsilon_min, self.epsilon_decay)
+        print("initialize")
 
     def getReward(self, state, nextState):
         """
@@ -151,21 +166,16 @@ class PolicyGradientPAgent(BustersAgent):
         # Quiero que 10 pasos sean equivalentes a comer un fantasmas 				#
         # Quiero que la victoria equivalga a 100 pasos 								#
         #############################################################################
-        victory_reward = 2.0
-        stay_the_same = 1.0
-        killing_ghost_reward = (state.LivingGhosts() - nextState.getLivingGhosts()) * 1.1
-        time_cost = 0.99 # multiply by a number between 0 and 1 makes our reward smaller 
-        reward = self.last_reward * (victory_reward if gameState.isWin() else stay_the_same) * killing_ghost_reward * time_cost
+        victory_reward = 10.0
+        stay_the_same = 0.0
+        killing_ghost_reward = (np.sum(state.getLivingGhosts()) - np.sum(nextState.getLivingGhosts())) * 1.0
+        time_cost = 0.1 # multiply by a number between 0 and 1 makes our reward smaller
+        reward = self.last_rewards[1] + (time_cost - killing_ghost_reward) - (victory_reward if nextState.isWin() else stay_the_same)
         return reward
         
     def chooseAction(self, gameState):
-        import graphicsDisplay
-        import numpy
-        import cv2
-        from cnn import ConvolutionalNeuralNetwork
 
         # Here we are choosing an action
-        print("chooseAction")
         # We need to get the actual state of the game
         # We as humans can learn and play just looking at the game
         # So the Deep Neural Network should be able to do the same
@@ -182,26 +192,34 @@ class PolicyGradientPAgent(BustersAgent):
 
         newsize = (256, 256)
         image = graphicsDisplay.getFrame().resize(newsize).convert('L')
-        state = numpy.array(image)
-        self.dpg = PolicyGradientCNN(self.frames.shape, self.action_space).model
+        state = np.expand_dims(np.array(image), axis=2)
 
         # The first iteration we won't have a reward so we shouldn't train until we have at least a reward
-        if(!self.first_time):
+        if(not self.first_time):
             self.frames[last_frame_position] = self.frames[current_frame_position] 
             self.frames[current_frame_position] = state
-            self.last_reward = getReward(self.lastGameState, gameState)
-            dpg.train_target(last_state, last_action, last_reward)
+            self.last_actions[last_frame_position] = self.last_actions[current_frame_position]
+            self.last_actions[current_frame_position] = self.last_action
+            self.last_rewards[last_frame_position] = self.last_rewards[current_frame_position]
+            self.last_rewards[current_frame_position] = self.getReward(self.lastGameState, gameState)
+            print('last_rewards')
+            print(self.last_rewards)
+            self.dpg.trainTarget(self.frames, self.last_actions, self.last_rewards)
         else:
             # We don't have 2 states when we start
             # If we would wait 1 frame to have 2 states we couldn't be optimal
             # So to avoid the waiting the first iteration we will have the same state for both frames
             self.frames[last_frame_position] = state 
-            self.frames[current_frame_position] = state 
+            self.frames[current_frame_position] = state
+            self.first_time = False
 
         # We choose an action
-        action = dpg.choose_action(self.frames)
+        ar_action = self.dpg.chooseAction(self.frames)[1]
 
-        
+        print("ACTION")
+        print(ar_action)
+
+        action = np.argmax(ar_action)
         # If we don't choose a legal position then we don't move
         move = Directions.STOP
         legal = gameState.getLegalActions(0) ##Legal position from the pacman
@@ -216,7 +234,7 @@ class PolicyGradientPAgent(BustersAgent):
 
         # We need to keep memory of the last state
         self.last_state = state
-        self.last_action = action
+        self.last_action = ar_action
         self.lastGameState = gameState
 
         return move
